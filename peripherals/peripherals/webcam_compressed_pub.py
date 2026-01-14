@@ -1,144 +1,84 @@
-# import rclpy
-# from rclpy.node import Node
-# from sensor_msgs.msg import CompressedImage
-# from cv_bridge import CvBridge
-# import cv2
-# import numpy as np
-
-# class MultiCompressedWebcamPublisher(Node):
-#     def __init__(self):
-#         super().__init__('multi_compressed_webcam_publisher')
-        
-#         # 1. 사용할 카메라 인덱스 리스트 (0, 1, 2, 3번 카메라)
-#         # USB 대역폭 문제로 4개가 동시에 안 열릴 경우 해상도를 낮추거나 USB 포트를 분산해야 합니다.
-#         self.camera_indices = [0, 1, 2]
-#         self.cameras = []
-
-#         # JPEG 압축 퀄리티 설정
-#         self.encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
-        
-#         # 2. 각 카메라별 캡처 객체와 퍼블리셔 생성
-#         for idx in self.camera_indices:
-#             cap = cv2.VideoCapture(idx)
-            
-#             # 카메라가 정상적으로 열렸는지 확인
-#             if cap.isOpened():
-#                 # 해상도 설정 (4개를 동시에 돌리려면 대역폭 관리를 위해 낮추는 것이 좋습니다)
-#                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-#                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                
-#                 # 토픽 이름을 구분 (예: /camera_0/image/compressed)
-#                 topic_name = f'/camera_{idx}/image/compressed'
-#                 publisher = self.create_publisher(CompressedImage, topic_name, 10)
-                
-#                 self.cameras.append({
-#                     'id': idx,
-#                     'cap': cap,
-#                     'pub': publisher
-#                 })
-#                 self.get_logger().info(f'Camera {idx} initialized on topic {topic_name}')
-#             else:
-#                 self.get_logger().error(f'Could not open camera {idx}')
-
-#         timer_period = 0.1  # 10Hz
-#         self.timer = self.create_timer(timer_period, self.timer_callback)
-#         self.bridge = CvBridge()
-
-#     def timer_callback(self):
-#         # 등록된 모든 카메라를 순회하며 이미지 발행
-#         for cam in self.cameras:
-#             ret, frame = cam['cap'].read()
-            
-#             if ret:
-#                 # OpenCV 이미지를 JPEG로 압축
-#                 success, encoded_image = cv2.imencode('.jpg', frame, self.encode_param)
-                
-#                 if success:
-#                     msg = CompressedImage()
-#                     msg.header.stamp = self.get_clock().now().to_msg()
-#                     msg.header.frame_id = f"camera_frame_{cam['id']}" # Frame ID도 구분
-#                     msg.format = "jpeg"
-#                     msg.data = np.array(encoded_image).tobytes()
-                    
-#                     # 해당 카메라의 퍼블리셔로 발행
-#                     cam['pub'].publish(msg)
-#             else:
-#                 self.get_logger().warning(f"Camera {cam['id']}: 프레임을 읽을 수 없습니다.")
-
-#     def __del__(self):
-#         # 모든 카메라 자원 해제
-#         for cam in self.cameras:
-#             if cam['cap'].isOpened():
-#                 cam['cap'].release()
-
-# def main(args=None):
-#     rclpy.init(args=args)
-#     node = MultiCompressedWebcamPublisher()
-#     try:
-#         rclpy.spin(node)
-#     except KeyboardInterrupt:
-#         pass
-#     finally:
-#         node.destroy_node()
-#         rclpy.shutdown()
-
-# if __name__ == '__main__':
-#     main()
-
-##########################################3333
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import ReentrantCallbackGroup
 from sensor_msgs.msg import CompressedImage
-from cv_bridge import CvBridge
 import cv2
 import numpy as np
 
-class CompressedWebcamPublisher(Node):
+class MultiCompressedWebcamPublisher(Node):
     def __init__(self):
-        super().__init__('compressed_webcam_publisher')
+        super().__init__('multi_compressed_webcam_publisher')
         
-        # 1. CompressedImage 메시지 타입 사용
-        self.publisher_ = self.create_publisher(CompressedImage, '/image/compressed', 10)
-        
-        timer_period = 0.1
-        self.timer = self.create_timer(timer_period, self.timer_callback)
-        
-        self.cap = cv2.VideoCapture(0)
-        self.bridge = CvBridge()
-        
-        # JPEG 압축 퀄리티 설정 (0~100, 높을수록 고화질/대용량)
+        # ls -l /dev/video* 로 확인 필요
+        self.camera_indices = [0, 2, 4, 6] 
+        self.cameras = []
         self.encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
-
-    def timer_callback(self):
-        ret, frame = self.cap.read()
         
-        if ret:
-            # 2. OpenCV 이미지를 JPEG로 압축 (Encoding)
-            success, encoded_image = cv2.imencode('.jpg', frame, self.encode_param)
+        self.callback_group = ReentrantCallbackGroup()
+
+        for idx in self.camera_indices:
+            cap = cv2.VideoCapture(idx)
             
+            if cap.isOpened():
+                # MJPEG 설정 (대역폭 절약)
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                cap.set(cv2.CAP_PROP_FPS, 10)
+                
+                # 버퍼 사이즈를 1로 줄여서 지연(Lag) 방지 (backend에 따라 지원 여부 다름)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+                topic_name = f'/camera_{idx}/image/compressed'
+                publisher = self.create_publisher(CompressedImage, topic_name, 1)
+                
+                # [수정 3] 카메라마다 개별 타이머 생성 & 콜백 그룹 할당
+                # 30FPS = 약 0.033초 주기
+                timer = self.create_timer(
+                    0.1, 
+                    lambda cap=cap, pub=publisher, c_id=idx: self.camera_callback(cap, pub, c_id),
+                    callback_group=self.callback_group
+                )
+                
+                self.cameras.append({'cap': cap, 'timer': timer})
+                self.get_logger().info(f'Camera {idx} initialized (MJPEG).')
+            else:
+                self.get_logger().error(f'Could not open camera {idx}')
+
+    def camera_callback(self, cap, publisher, camera_id):
+        # 개별 스레드에서 실행됨 (하나가 느려져도 다른 카메라에 영향 없음)
+        ret, frame = cap.read()
+        if ret:
+            success, encoded_image = cv2.imencode('.jpg', frame, self.encode_param)
             if success:
-                # 3. CompressedImage 메시지 생성 및 채우기
                 msg = CompressedImage()
                 msg.header.stamp = self.get_clock().now().to_msg()
+                msg.header.frame_id = f"camera_frame_{camera_id}"
                 msg.format = "jpeg"
                 msg.data = np.array(encoded_image).tobytes()
-                
-                self.publisher_.publish(msg)
-        else:
-            self.get_logger().warning("프레임을 읽을 수 없습니다.")
+                publisher.publish(msg)
 
-    def __del__(self):
-        if self.cap.isOpened():
-            self.cap.release()
+    def close_cameras(self):
+        for cam in self.cameras:
+            if cam['cap'].isOpened():
+                cam['cap'].release()
 
 def main(args=None):
     rclpy.init(args=args)
-    node = CompressedWebcamPublisher()
+    node = MultiCompressedWebcamPublisher()
+    
+    # [수정 4] 멀티스레드 실행기로 노드 실행
+    # 기본 Spin은 싱글 스레드라 병목이 생깁니다.
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        node.close_cameras()
         node.destroy_node()
         rclpy.shutdown()
 
